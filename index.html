@@ -1,10 +1,511 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Title</title>
+<meta charset="UTF-8">
+<title>Heidi vs FIP</title>
+<style>
+body{margin:0;background:#000;color:#fff;font:14px monospace;overflow:hidden}
+canvas{display:block;margin:0 auto;background:#001}
+#ui{position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.7);padding:10px;border-radius:5px}
+#instructions{position:absolute;bottom:10px;left:10px;background:rgba(0,0,0,0.7);padding:5px;border-radius:5px;font-size:12px}
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="ui">Health: <span id="health">100</span> | Score: <span id="score">0</span> | Level: <span id="level">1</span> | Ultimate: <span id="ultimate">0</span>%</div>
+<div id="instructions">Arrow Keys: Move | SPACE: Shoot | G: Ultimate (when charged) | Fight FIP!</div>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+c.width=W=window.innerWidth;c.height=H=window.innerHeight;
+let player={x:0,y:0,health:100,maxHealth:100,score:0,level:1,ultimateCharge:0};
+let keys={},bullets=[],viruses=[],particles=[],buzzwords=[];
+let corridorW=Math.min(W,H)*0.4,time=0,enemySpawnTimer=0,audioCtx,sounds={};
+let gameState='start'; // 'start', 'playing', 'gameover'
+let finalScore=0,finalLevel=0;
+let waveActive=false,waveTimer=0,waveCount=0,levelAnnounce=0;
+let virusesInWave=0,virusesCleared=0;
+let buzzList=['MEOW!','HISS!','POUNCE!','SCRATCH!','PURR!','SWIPE!','RAWR!'];
 
+// Audio
+try{
+  audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  sounds.shoot=()=>playTone(800,0.1);
+  sounds.hit=()=>playTone(400,0.2);
+  sounds.powerup=()=>playTone(1200,0.3);
+  sounds.boss=()=>playTone(200,0.5);
+  sounds.destroy=()=>{playTone(600,0.1);playTone(900,0.15);playTone(1200,0.1);};
+}catch(e){sounds={shoot:()=>{},hit:()=>{},powerup:()=>{},boss:()=>{},destroy:()=>{}};}
+
+function playTone(f,d){
+  if(!audioCtx)return;
+  let o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.connect(g);g.connect(audioCtx.destination);
+  o.frequency.value=f;g.gain.setValueAtTime(0.1,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01,audioCtx.currentTime+d);
+  o.start();o.stop(audioCtx.currentTime+d);
+}
+
+// Wave-based virus spawning
+function spawnVirus(){
+  // Start new wave if no active wave
+  if(!waveActive&&viruses.length===0){
+    waveActive=true;
+    waveTimer=0;
+    waveCount++;
+    virusesInWave=Math.min(15,5+player.level*2);
+    virusesCleared=0;
+    
+    // Spawn wave
+    for(let i=0;i<virusesInWave;i++){
+      let isBoss=i===virusesInWave-1&&player.level>2;
+      let isMouse=Math.random()<0.15;
+      viruses.push({
+        x:(Math.random()-0.5)*corridorW*0.8,
+        y:(Math.random()-0.5)*corridorW*0.8,
+        z:18+Math.random()*8+i*0.5,
+        size:isBoss?0.8:0.4+Math.random()*0.2,
+        type:Math.floor(Math.random()*3),
+        health:isBoss?8:1+Math.floor(player.level/4),
+        speed:isBoss?0.015:0.025+Math.random()*0.01,
+        boss:isBoss,
+        mouse:isMouse,
+        angle:0,
+        rotSpeed:(Math.random()-0.5)*0.1
+      });
+    }
+    sounds.boss();
+  }
+  
+  // End wave when all cleared
+  if(waveActive&&viruses.length===0){
+    waveActive=false;
+    player.level++;
+    player.maxHealth+=20;
+    player.health=Math.min(player.maxHealth,player.health+50);
+    levelAnnounce=120; // 2 seconds at 60fps
+  }
+}
+
+function drawCorridor(){
+  ctx.strokeStyle='#555';ctx.lineWidth=1;
+  let cx=W/2,cy=H/2,fs=30;
+  ctx.beginPath();
+  // Lines to screen corners
+  ctx.moveTo(0,0);ctx.lineTo(cx-fs/2,cy-fs/2);
+  ctx.moveTo(W,0);ctx.lineTo(cx+fs/2,cy-fs/2);
+  ctx.moveTo(0,H);ctx.lineTo(cx-fs/2,cy+fs/2);
+  ctx.moveTo(W,H);ctx.lineTo(cx+fs/2,cy+fs/2);
+  ctx.stroke();
+  ctx.strokeRect(cx-fs/2,cy-fs/2,fs,fs);
+}
+
+function drawStartScreen(){
+  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);ctx.textAlign='center';ctx.shadowBlur=20;
+  ctx.fillStyle='#0ff';ctx.shadowColor='#0ff';ctx.font='bold 48px monospace';ctx.fillText('HEIDI vs FIP',W/2,H/2-180);
+  ctx.fillStyle='#f0f';ctx.shadowColor='#f0f';ctx.font='24px monospace';ctx.fillText('A Black Cat\'s Fight',W/2,H/2-140);
+  ctx.shadowBlur=0;ctx.fillStyle='#ff6';ctx.font='16px monospace';
+  ctx.fillText('Feline Infectious Peritonitis (FIP) is a deadly viral disease',W/2,H/2-80);
+  ctx.fillText('caused by a coronavirus. The virus appears as spherical',W/2,H/2-60);
+  ctx.fillText('particles with crown-like spikes. For most cats, FIP means',W/2,H/2-40);
+  ctx.fillStyle='#f88';ctx.fillText('certain death - which is why Heidi fights it.',W/2,H/2-20);
+  ctx.fillStyle='#fff';ctx.shadowBlur=10;ctx.font='18px monospace';ctx.fillText('PRESS SPACE TO START',W/2,H/2+40);
+  ctx.fillStyle='#888';ctx.font='14px monospace';ctx.fillText('Arrow Keys: Move | Space: Shoot | G: Ultimate',W/2,H/2+80);
+  ctx.fillStyle='#ff6';ctx.font='16px monospace';ctx.fillText('In memory of Heidi - who fought bravely',W/2,H-50);
+  ctx.textAlign='left';ctx.shadowBlur=0;
+}
+
+function drawGameOverScreen(){
+  ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);drawCorridor();
+  ctx.textAlign='center';ctx.shadowBlur=20;
+  ctx.fillStyle='#f00';ctx.shadowColor='#f00';ctx.font='bold 42px monospace';ctx.fillText('MISSION COMPLETE',W/2,H/2-80);
+  ctx.fillStyle='#0ff';ctx.font='28px monospace';ctx.fillText(`Viruses Destroyed: ${finalScore}`,W/2,H/2-20);
+  ctx.fillStyle='#f0f';ctx.fillText(`Level Reached: ${finalLevel}`,W/2,H/2+20);
+  ctx.fillStyle='#fff';ctx.font='18px monospace';ctx.fillText('PRESS SPACE TO CONTINUE THE FIGHT',W/2,H/2+80);
+  ctx.fillStyle='#ff6';ctx.font='16px monospace';ctx.fillText('Heidi\'s spirit lives on...',W/2,H-50);
+  ctx.textAlign='left';ctx.shadowBlur=0;
+}
+
+function drawCatPaw(){
+  let py=H-200,px=W/2-80+player.x*0.3,s=keys[32];
+  drawPaw(px+80,py+60,70,50,s);
+}
+
+function drawPaw(x,y,w,h,shooting){
+  // Main paw pad (black)
+  ctx.fillStyle='#000';
+  ctx.beginPath();
+  ctx.ellipse(x,y,w,h,0,0,Math.PI*2);
+  ctx.fill();
+  
+  // Paw outline for depth
+  ctx.strokeStyle='#333';
+  ctx.lineWidth=2;
+  ctx.stroke();
+  
+  // Two brown spots
+  ctx.fillStyle='#8B4513';
+  ctx.beginPath();
+  ctx.ellipse(x-w*0.3,y-h*0.2,w*0.2,h*0.2,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x+w*0.3,y+h*0.2,w*0.15,h*0.25,0,0,Math.PI*2);
+  ctx.fill();
+  
+  // Claws
+  ctx.strokeStyle=shooting?'#ff6':'#eee';
+  ctx.lineWidth=shooting?5:3;
+  for(let i=0;i<3;i++){
+    let extend=shooting?12:8;
+    let clawX=x-w*0.4+i*w*0.4;
+    let clawY=y-h*0.7;
+    ctx.beginPath();
+    ctx.moveTo(clawX,clawY);
+    ctx.lineTo(clawX,clawY-extend);
+    ctx.stroke();
+  }
+}
+
+function drawVirus(v){
+  let p=Math.max(0.1,1-v.z/20),sx=W/2+v.x*p,sy=H/2+v.y*p,sz=v.size*p*100;
+  if(p>0.1&&sx>-sz&&sx<W+sz){
+    if(v.mouse){
+      // Draw mouse
+      ctx.fillStyle='#666';ctx.beginPath();ctx.ellipse(sx,sy,sz*0.8,sz*0.6,0,0,Math.PI*2);ctx.fill();
+      // Mouse ears
+      ctx.fillStyle='#999';
+      ctx.beginPath();ctx.arc(sx-sz*0.5,sy-sz*0.4,sz*0.3,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(sx+sz*0.5,sy-sz*0.4,sz*0.3,0,Math.PI*2);ctx.fill();
+      // Tail
+      ctx.strokeStyle='#666';ctx.lineWidth=3;
+      ctx.beginPath();ctx.moveTo(sx,sy+sz*0.6);ctx.lineTo(sx+sz*0.8,sy+sz*1.2);ctx.stroke();
+    }else{
+      // Draw virus
+      let c=(v.boss?['#800','#a00','#f00']:['#f00','#f80','#ff0'])[v.type];
+      if(v.boss){ctx.shadowColor=c;ctx.shadowBlur=20;}
+      ctx.fillStyle=c;ctx.beginPath();ctx.arc(sx,sy,sz,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+      ctx.strokeStyle=c;ctx.lineWidth=v.boss?4:2;
+      let spks=v.boss?12:8;
+      for(let i=0;i<spks;i++){
+        let a=i*Math.PI*2/spks+time*0.1*(v.boss?2:1),sl=sz*(v.boss?1.2:0.8);
+        ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(sx+Math.cos(a)*sl,sy+Math.sin(a)*sl);ctx.stroke();
+      }
+    }
+    if(v.health>1||v.boss){
+      ctx.fillStyle='#fff';ctx.font=(v.boss?'16':'12')+'px monospace';ctx.fillText(v.health,sx-8,sy-sz-10);
+      if(v.boss){ctx.fillStyle='#f00';ctx.fillText('BOSS',sx-20,sy+sz+20);}
+    }
+  }
+}
+
+
+function drawBullet(b){
+  let p=Math.max(0.1,1-b.z/20),sx=W/2+b.x*p,sy=H/2+b.y*p,sz=(6-b.z*0.2)*p;
+  if(b.type==='ultimate'){
+    ctx.fillStyle='#ff0';ctx.shadowColor='#ff0';ctx.shadowBlur=10*p;sz*=1.2;
+  }else{
+    ctx.fillStyle='#0ff';ctx.shadowBlur=0;
+  }
+  ctx.beginPath();ctx.arc(sx,sy,Math.max(1,sz),0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+}
+
+
+function drawParticle(p){
+  let perspective=Math.max(0.1,1-p.z/20);
+  let screenX=W/2+p.x*perspective;
+  let screenY=H/2+p.y*perspective;
+  
+  if(p.text){
+    // Damage number display
+    ctx.fillStyle=p.color||'#fff';
+    ctx.font=`${Math.floor(p.size*perspective)}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText(p.text,screenX,screenY);
+    ctx.textAlign='left';
+  }else{
+    // Regular particle
+    ctx.fillStyle=p.color||`rgba(255,${p.life*255},0,${p.life})`;
+    ctx.beginPath();
+    ctx.arc(screenX,screenY,p.size*perspective,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function update(){
+  time++;
+  
+  // Handle game state
+  if(gameState==='start'){
+    if(keys[32]){
+      gameState='playing';
+      // Reset game
+      player={x:0,y:0,health:100,maxHealth:100,score:0,level:1,ultimateCharge:0};
+      bullets=[];viruses=[];particles=[];buzzwords=[];
+      waveActive=false;waveTimer=0;waveCount=0;levelAnnounce=0;
+      virusesInWave=0;virusesCleared=0;enemySpawnTimer=0;
+    }
+    return;
+  }
+  
+  if(gameState==='gameover'){
+    if(keys[32]){
+      gameState='playing';
+      // Reset game  
+      player={x:0,y:0,health:100,maxHealth:100,score:0,level:1,ultimateCharge:0};
+      bullets=[];viruses=[];particles=[];buzzwords=[];
+      waveActive=false;waveTimer=0;waveCount=0;levelAnnounce=0;
+      virusesInWave=0;virusesCleared=0;enemySpawnTimer=0;
+    }
+    return;
+  }
+  
+  if(keys[37])player.x-=6;if(keys[39])player.x+=6;if(keys[38])player.y-=6;if(keys[40])player.y+=6;
+  
+  // Basic weapon - SPACE key
+  if(keys[32]&&time%12===0){
+    sounds.shoot();
+    bullets.push({x:player.x,y:player.y,z:0,vz:0.4,damage:1,type:'basic'});
+  }
+  
+  // Ultimate weapon - G key
+  if(keys[71]&&player.ultimateCharge>=100){
+    sounds.powerup();
+    player.ultimateCharge=0;
+    // Laser beam ultimate
+    for(let i=0;i<20;i++){
+      bullets.push({
+        x:player.x+(Math.random()-0.5)*40,
+        y:player.y+(Math.random()-0.5)*40,
+        z:i*0.8,
+        vz:0.6,
+        damage:3,
+        type:'ultimate'
+      });
+    }
+  }
+  
+  player.x=Math.max(-corridorW/2,Math.min(corridorW/2,player.x));player.y=Math.max(-corridorW/2,Math.min(corridorW/2,player.y));
+  
+  bullets.forEach((b,i)=>{b.z+=b.vz;if(b.z>20)bullets.splice(i,1);});
+  viruses.forEach((v,i)=>{v.z-=v.speed;v.angle+=v.rotSpeed||0.05;if(v.z<0){player.health-=(v.boss?20:10);viruses.splice(i,1);}});
+  
+  // Collision detection
+  bullets.forEach((bullet,bi)=>{
+    viruses.forEach((virus,vi)=>{
+      let dx=bullet.x-virus.x;
+      let dy=bullet.y-virus.y;
+      let dz=bullet.z-virus.z;
+      // Use simpler 2D distance check for more reliable hits
+      let distance2D=Math.sqrt(dx*dx+dy*dy);
+      let zDiff=Math.abs(dz);
+      let hitRadius=(virus.boss?1.5:1.0)*virus.size*100+50;
+      if(distance2D<hitRadius&&zDiff<2){
+        virus.health-=bullet.damage||1;
+        sounds.hit();
+        
+        // Hit flash
+        ctx.fillStyle='rgba(255,255,255,0.3)';ctx.fillRect(0,0,W,H);
+        bullets.splice(bi,1);
+        
+        // Particles and damage text
+        for(let i=0;i<(virus.boss?8:4);i++)particles.push({x:virus.x,y:virus.y,z:virus.z,vx:(Math.random()-0.5)*0.15,vy:(Math.random()-0.5)*0.15,vz:(Math.random()-0.5)*0.15,size:Math.random()*6+2,life:1,color:virus.boss?'#f00':'#ff0'});
+        particles.push({x:virus.x,y:virus.y-20,z:virus.z,vx:0,vy:-0.06,vz:0,size:14,life:0.5,text:bullet.damage||1,color:'#fff'});
+        
+        if(virus.health<=0){
+          player.score+=(virus.boss?5:1);
+          player.ultimateCharge=Math.min(100,player.ultimateCharge+(virus.boss?25:5));
+          virusesCleared++;
+          
+          // Destruction effects
+          sounds.destroy();
+          
+          // Buzzword instead of blobs
+          buzzwords.push({x:virus.x,y:virus.y,z:virus.z,text:buzzList[Math.floor(Math.random()*buzzList.length)],life:1.2,vy:-0.08});
+          
+          viruses.splice(vi,1);
+        }
+      }
+    });
+  });
+  
+  
+  // Update particles
+  particles.forEach((p,i)=>{
+    p.x+=p.vx;p.y+=p.vy;p.z+=p.vz;
+    p.life-=0.02;
+    if(p.life<=0)particles.splice(i,1);
+  });
+  
+  // Update buzzwords
+  buzzwords.forEach((b,i)=>{
+    b.y+=b.vy;b.life-=0.015;
+    if(b.life<=0)buzzwords.splice(i,1);
+  });
+  
+  // Update level announce timer
+  if(levelAnnounce>0)levelAnnounce--;
+  
+  spawnVirus();
+  
+  // Game over
+  if(player.health<=0){
+    finalScore=player.score;
+    finalLevel=player.level;
+    gameState='gameover';
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  
+  // Handle different game states
+  if(gameState==='start'){
+    drawStartScreen();
+    return;
+  }
+  
+  if(gameState==='gameover'){
+    drawGameOverScreen();
+    return;
+  }
+  
+  // Playing state
+  drawCorridor();
+  
+  // Draw game objects (back to front)
+  viruses.sort((a,b)=>b.z-a.z).forEach(drawVirus);
+  bullets.forEach(drawBullet);
+  particles.forEach(drawParticle);
+  
+  // Draw buzzwords (more visible)
+  buzzwords.forEach(b=>{
+    let p=Math.max(0.1,1-b.z/20),sx=W/2+b.x*p,sy=H/2+b.y*p;
+    ctx.fillStyle=`rgba(255,255,0,${b.life})`;ctx.strokeStyle=`rgba(0,0,0,${b.life})`;
+    ctx.font=`bold ${Math.floor(30*p)}px monospace`;ctx.textAlign='center';ctx.lineWidth=2;
+    ctx.strokeText(b.text,sx,sy);ctx.fillText(b.text,sx,sy);ctx.textAlign='left';
+  });
+  
+  // Level announcement
+  if(levelAnnounce>0){
+    ctx.textAlign='center';ctx.shadowBlur=30;
+    ctx.fillStyle='#0ff';ctx.shadowColor='#0ff';
+    ctx.font=`bold ${Math.floor(80-levelAnnounce/2)}px monospace`;
+    ctx.fillText(`LEVEL ${player.level}`,W/2,H/2-50);
+    ctx.fillStyle='#ff0';ctx.font='32px monospace';
+    ctx.fillText(`Wave ${waveCount} Complete!`,W/2,H/2+20);
+    ctx.textAlign='left';ctx.shadowBlur=0;
+  }
+
+  drawCatPaw();
+  
+  // Health bar (responsive positioning)
+  let barW=Math.min(200,W*0.2),barX=W-barW-20;
+  ctx.fillStyle='#f00';ctx.fillRect(barX,20,barW,20);
+  ctx.fillStyle='#0f0';ctx.fillRect(barX,20,barW*(player.health/player.maxHealth),20);
+  ctx.strokeStyle='#fff';ctx.strokeRect(barX,20,barW,20);
+  
+  // Wave progress indicator
+  if(waveActive){
+    let progress=virusesCleared/virusesInWave;
+    ctx.fillStyle='#333';ctx.fillRect(20,H-60,200,20);
+    ctx.fillStyle='#0a0';ctx.fillRect(20,H-60,200*progress,20);
+    ctx.strokeStyle='#fff';ctx.strokeRect(20,H-60,200,20);
+    ctx.fillStyle='#fff';ctx.font='14px monospace';
+    ctx.fillText(`Wave ${waveCount}: ${virusesCleared}/${virusesInWave}`,20,H-70);
+  }
+  
+  // UI
+  document.getElementById('health').textContent=player.health;
+  document.getElementById('score').textContent=player.score;
+  document.getElementById('level').textContent=player.level;
+  document.getElementById('ultimate').textContent=Math.floor(player.ultimateCharge);
+  
+  // Crosshair (moves with player position)
+  let crosshairX=W/2+player.x*0.5;
+  let crosshairY=H/2+player.y*0.5;
+  
+  // Crosshair circle
+  ctx.strokeStyle=keys[32]?'#ff0':'#0ff';
+  ctx.lineWidth=keys[32]?3:2;
+  ctx.beginPath();
+  ctx.arc(crosshairX,crosshairY,15,0,Math.PI*2);
+  ctx.stroke();
+  
+  // Crosshair lines
+  ctx.beginPath();
+  ctx.moveTo(crosshairX-10,crosshairY);
+  ctx.lineTo(crosshairX+10,crosshairY);
+  ctx.moveTo(crosshairX,crosshairY-10);
+  ctx.lineTo(crosshairX,crosshairY+10);
+  ctx.stroke();
+  
+  
+  // Ultimate bar (responsive)
+  let c=player.ultimateCharge/100;
+  ctx.fillStyle='#444';ctx.fillRect(barX,50,barW,15);ctx.fillStyle=c>=1?'#ff0':'#06f';ctx.fillRect(barX,50,barW*c,15);
+  ctx.strokeStyle='#fff';ctx.strokeRect(barX,50,barW,15);ctx.fillStyle='#fff';ctx.font='12px monospace';
+  ctx.fillText(c>=1?'ULTIMATE READY!':'Ultimate Charge',barX,75);
+}
+
+function gameLoop(){
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// Controls
+addEventListener('keydown',e=>keys[e.keyCode]=true);
+addEventListener('keyup',e=>keys[e.keyCode]=false);
+
+function drawMouse(x,y,size){
+  // Mouse body (gray)
+  ctx.fillStyle='#666';
+  ctx.beginPath();
+  ctx.ellipse(x,y,size*0.8,size*0.6,0,0,Math.PI*2);
+  ctx.fill();
+  
+  // Mouse outline
+  ctx.strokeStyle='#888';
+  ctx.lineWidth=1;
+  ctx.stroke();
+  
+  // Mouse ears (rounded)
+  ctx.fillStyle='#999';
+  ctx.beginPath();
+  ctx.arc(x-size*0.5,y-size*0.4,size*0.3,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x+size*0.5,y-size*0.4,size*0.3,0,Math.PI*2);
+  ctx.fill();
+  
+  // Inner ears (pink)
+  ctx.fillStyle='#faa';
+  ctx.beginPath();
+  ctx.arc(x-size*0.5,y-size*0.4,size*0.15,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x+size*0.5,y-size*0.4,size*0.15,0,Math.PI*2);
+  ctx.fill();
+  
+  // Mouse tail (curved)
+  ctx.strokeStyle='#666';
+  ctx.lineWidth=Math.max(2,size*0.1);
+  ctx.beginPath();
+  ctx.moveTo(x,y+size*0.6);
+  ctx.quadraticCurveTo(x+size*0.6,y+size*1.1,x+size*0.8,y+size*1.2);
+  ctx.stroke();
+  
+  // Eyes
+  ctx.fillStyle='#000';
+  ctx.beginPath();
+  ctx.arc(x-size*0.2,y-size*0.1,size*0.08,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x+size*0.2,y-size*0.1,size*0.08,0,Math.PI*2);
+  ctx.fill();
+}
+
+// Start game
+gameLoop();
+</script>
 </body>
 </html>
