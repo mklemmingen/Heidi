@@ -29,12 +29,14 @@ let buzzList=['MEOW!','HISS!','POUNCE!','SCRATCH!','PURR!','SWIPE!','RAWR!'];
 // Audio
 try{
   audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-  sounds.shoot=()=>playTone(800,0.1);
-  sounds.hit=()=>playTone(400,0.2);
-  sounds.powerup=()=>playTone(1200,0.3);
-  sounds.boss=()=>playTone(200,0.5);
-  sounds.destroy=()=>{playTone(600,0.1);playTone(900,0.15);playTone(1200,0.1);};
-}catch(e){sounds={shoot:()=>{},hit:()=>{},powerup:()=>{},boss:()=>{},destroy:()=>{}};}
+  let notes=[440,493,523,587,659,740,831],melody=0;
+  sounds.shoot=()=>playTone(800+(melody%8)*15,0.03);
+  sounds.hit=()=>{melody++;playTone(400+(melody%6)*8,0.05);};
+  sounds.powerup=()=>{for(let i=0;i<3;i++)setTimeout(()=>playTone(notes[4+i],0.15),i*80);};
+  sounds.boss=()=>playTone(200,0.4);
+  sounds.destroy=()=>{melody+=2;playTone(600,0.08);};
+  sounds.move=()=>{if(Math.random()<0.1){melody++;playTone(notes[melody%5],0.02);}};
+}catch(e){sounds={shoot:()=>{},hit:()=>{},powerup:()=>{},boss:()=>{},destroy:()=>{},move:()=>{}};}
 
 function playTone(f,d){
   if(!audioCtx)return;
@@ -258,7 +260,10 @@ function update(){
     return;
   }
   
-  if(keys[37])player.x-=6;if(keys[39])player.x+=6;if(keys[38])player.y-=6;if(keys[40])player.y+=6;
+  if(keys[37]){player.x-=6;if(time%15===0)sounds.move();}
+  if(keys[39]){player.x+=6;if(time%15===0)sounds.move();}
+  if(keys[38]){player.y-=6;if(time%15===0)sounds.move();}
+  if(keys[40]){player.y+=6;if(time%15===0)sounds.move();}
   
   // Basic weapon - SPACE key
   if(keys[32]&&time%12===0){
